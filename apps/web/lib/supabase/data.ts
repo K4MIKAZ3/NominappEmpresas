@@ -1,12 +1,14 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { createClient } from "./server";
+import type { LegalSnapshot } from "@nominapp/payroll-engine";
 import type {
   Company,
   Employee,
   LegalParameterSet,
   OfficialHoliday,
   PayrollPeriod,
+  PayrollSettlement,
 } from "@/lib/types";
 
 export const ACTIVE_COMPANY_COOKIE = "ne_active_company";
@@ -83,6 +85,86 @@ export async function listHolidays(): Promise<OfficialHoliday[]> {
     .order("holiday_date");
   if (error) throw error;
   return (data ?? []) as OfficialHoliday[];
+}
+
+export async function listWorkDays(
+  companyId: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<
+  {
+    employee_id: string;
+    work_date: string;
+    start_time: string;
+    end_time: string;
+    day_type: "NORMAL" | "FESTIVO_DOMINICAL" | "FESTIVO_NOCTURNO";
+  }[]
+> {
+  const { supabase } = await requireUser();
+  const { data, error } = await supabase
+    .from("work_day_entries")
+    .select("employee_id,work_date,start_time,end_time,day_type")
+    .eq("company_id", companyId)
+    .gte("work_date", periodStart)
+    .lte("work_date", periodEnd);
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function listLegalContext(): Promise<{
+  snapshots: LegalSnapshot[];
+  holidays: string[];
+}> {
+  const { supabase } = await requireUser();
+  const [params, holidays] = await Promise.all([
+    supabase
+      .from("legal_parameter_sets")
+      .select(
+        "id,valid_from,valid_to,smmlv,transport_subsidy,transport_salary_cap_multiplier,uvt,health_employee_rate,pension_employee_rate,reference_month_days,settlement_year_days,cesantias_interest_annual,ordinary_work_days_per_week,weekly_hours_limit,dominical_factor,night_start_hour,night_end_hour,night_ordinary_factor,extra_day_factor,extra_night_factor",
+      )
+      .order("valid_from"),
+    supabase.from("official_holidays").select("holiday_date").order("holiday_date"),
+  ]);
+  if (params.error) throw params.error;
+  if (holidays.error) throw holidays.error;
+  const holidayDates = (holidays.data ?? []).map((row) => String(row.holiday_date).slice(0, 10));
+  const snapshots: LegalSnapshot[] = (params.data ?? []).map((row) => ({
+    id: row.id,
+    validFrom: String(row.valid_from).slice(0, 10),
+    validTo: row.valid_to ? String(row.valid_to).slice(0, 10) : null,
+    smmlv: Number(row.smmlv),
+    transportSubsidy: Number(row.transport_subsidy),
+    transportSalaryCapMultiplier: Number(row.transport_salary_cap_multiplier),
+    uvt: Number(row.uvt),
+    healthEmployeeRate: Number(row.health_employee_rate),
+    pensionEmployeeRate: Number(row.pension_employee_rate),
+    referenceMonthDays: Number(row.reference_month_days),
+    settlementYearDays: Number(row.settlement_year_days),
+    cesantiasInterestAnnual: Number(row.cesantias_interest_annual),
+    ordinaryWorkDaysPerWeek: Number(row.ordinary_work_days_per_week),
+    weeklyHoursLimit: Number(row.weekly_hours_limit),
+    dominicalFactor: Number(row.dominical_factor),
+    nightStartHour: Number(row.night_start_hour),
+    nightEndHour: Number(row.night_end_hour),
+    nightOrdinaryFactor: Number(row.night_ordinary_factor),
+    extraDayFactor: Number(row.extra_day_factor),
+    extraNightFactor: Number(row.extra_night_factor),
+    officialHolidays: holidayDates,
+  }));
+  return { snapshots, holidays: holidayDates };
+}
+
+export async function listPayrollSettlements(periodId: string): Promise<PayrollSettlement[]> {
+  const { supabase } = await requireUser();
+  const { data, error } = await supabase
+    .from("payroll_settlements")
+    .select(
+      "id,company_id,period_id,employee_id,full_name,document_id,job_title,gross_total,deduction_total,net_total,ibc_total,worked_days,basis,lines",
+    )
+    .eq("period_id", periodId)
+    .order("full_name");
+  if (error) throw error;
+  return (data ?? []) as PayrollSettlement[];
 }
 
 export async function countActiveEmployees(companyId: string): Promise<number> {

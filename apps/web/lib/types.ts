@@ -45,6 +45,30 @@ export interface PayrollPeriod {
   closed_at: string | null;
 }
 
+export interface PayrollLineRecord {
+  label: string;
+  amount: number;
+  code?: string;
+  kind: "earning" | "deduction";
+}
+
+export interface PayrollSettlement {
+  id: string;
+  company_id: string;
+  period_id: string;
+  employee_id: string | null;
+  full_name: string;
+  document_id: string;
+  job_title: string;
+  gross_total: number;
+  deduction_total: number;
+  net_total: number;
+  ibc_total: number;
+  worked_days: number;
+  basis: "attendance" | "ordinary";
+  lines: PayrollLineRecord[];
+}
+
 export interface LegalParameterSet {
   id: string;
   valid_from: string;

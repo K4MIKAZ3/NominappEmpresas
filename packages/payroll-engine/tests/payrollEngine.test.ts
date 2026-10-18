@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   contributionBase,
+  liquidateDateRange,
   liquidateMonth,
+  ordinaryWorkEntries,
   resolveLegalSnapshot,
   type EmployeeProfile,
   type WorkDayEntry,
@@ -66,5 +68,23 @@ describe("payrollEngine Empresas", () => {
     const s = resolveLegalSnapshot("2026-03-15");
     assert.equal(s.dominicalFactor, 1.8);
     assert.equal(s.weeklyHoursLimit, 44);
+  });
+
+  it("arma la jornada ordinaria del mes sin domingo ni festivo", () => {
+    const entries = ordinaryWorkEntries("2026-03-01", "2026-03-31", 8);
+    const dates = entries.map((e) => e.date);
+    assert.ok(dates.includes("2026-03-02"));
+    assert.ok(dates.includes("2026-03-31"));
+    assert.equal(dates.includes("2026-03-01"), false);
+    assert.equal(dates.includes("2026-03-23"), false);
+    assert.ok(entries.every((e) => e.start === "08:00" && e.end === "17:00"));
+
+    const payroll = liquidateDateRange(profile, "2026-03-01", "2026-03-31", entries);
+    assert.equal(payroll.workedDays, entries.length);
+    assert.ok(payroll.grossTotal > 0);
+    assert.ok(payroll.netTotal > 0);
+    assert.ok(payroll.netTotal < payroll.grossTotal);
+    const salud = payroll.legalDeductions.find((d) => d.code === "SAL");
+    assert.equal(salud?.amount, Math.trunc(payroll.ibcTotal * 0.04));
   });
 });
