@@ -32,6 +32,22 @@ export interface Employee {
   pending_vacation_days: number;
   active: boolean;
   hired_at: string | null;
+  email: string | null;
+}
+
+export type PayrollAdjustmentKind = "absence" | "hours" | "bonus";
+
+export interface PayrollAdjustment {
+  id: string;
+  company_id: string;
+  period_id: string;
+  employee_id: string;
+  kind: PayrollAdjustmentKind;
+  work_date: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  label: string | null;
+  amount: number | null;
 }
 
 export interface PayrollPeriod {

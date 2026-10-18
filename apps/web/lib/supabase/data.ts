@@ -7,6 +7,7 @@ import type {
   Employee,
   LegalParameterSet,
   OfficialHoliday,
+  PayrollAdjustment,
   PayrollPeriod,
   PayrollSettlement,
 } from "@/lib/types";
@@ -48,7 +49,7 @@ export async function listEmployees(companyId: string): Promise<Employee[]> {
   const { data, error } = await supabase
     .from("employees")
     .select(
-      "id,company_id,full_name,document_id,job_title,monthly_salary,daily_hours,contract_type,pay_period_type,pending_vacation_days,active,hired_at",
+      "id,company_id,full_name,document_id,email,job_title,monthly_salary,daily_hours,contract_type,pay_period_type,pending_vacation_days,active,hired_at",
     )
     .eq("company_id", companyId)
     .order("full_name");
@@ -152,6 +153,17 @@ export async function listLegalContext(): Promise<{
     officialHolidays: holidayDates,
   }));
   return { snapshots, holidays: holidayDates };
+}
+
+export async function listPayrollAdjustments(periodId: string): Promise<PayrollAdjustment[]> {
+  const { supabase } = await requireUser();
+  const { data, error } = await supabase
+    .from("payroll_adjustments")
+    .select("id,company_id,period_id,employee_id,kind,work_date,start_time,end_time,label,amount")
+    .eq("period_id", periodId)
+    .order("created_at");
+  if (error) throw error;
+  return (data ?? []) as PayrollAdjustment[];
 }
 
 export async function listPayrollSettlements(periodId: string): Promise<PayrollSettlement[]> {

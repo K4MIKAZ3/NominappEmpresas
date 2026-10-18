@@ -1,21 +1,26 @@
 import Link from "next/link";
 import {
+  addPayrollAdjustmentAction,
   closePayrollPeriodAction,
   createPayrollPeriodAction,
+  deletePayrollAdjustmentAction,
+  reopenPayrollPeriodAction,
+  updatePayrollPeriodAction,
 } from "@/app/actions";
 import { AppShell } from "@/components/layout/AppShell";
 import { formatCop } from "@/lib/format";
-import { settleEmployees, type EmployeeSettlement } from "@/lib/payroll/settle";
+import { settleEmployees, toSettleEmployee, type EmployeeSettlement } from "@/lib/payroll/settle";
 import {
   getActiveCompany,
   listCompanies,
   listEmployees,
   listLegalContext,
+  listPayrollAdjustments,
   listPayrollPeriods,
   listPayrollSettlements,
   listWorkDays,
 } from "@/lib/supabase/data";
-import type { PayrollLineRecord, PayrollSettlement } from "@/lib/types";
+import type { PayrollAdjustment, PayrollLineRecord, PayrollSettlement } from "@/lib/types";
 
 export const metadata = { title: "Nómina" };
 export const dynamic = "force-dynamic";
@@ -27,7 +32,7 @@ type Row = {
   gross: number;
   deductions: number;
   net: number;
-  basis: "attendance" | "ordinary" | "stored";
+  basis: "attendance" | "ordinary" | "adjusted" | "stored";
   lines: PayrollLineRecord[];
 };
 
@@ -75,38 +80,39 @@ export default async function PayrollPage({
 
   let rows: Row[] = [];
   let frozen = false;
+  let adjustments: PayrollAdjustment[] = [];
   if (company && selected) {
     if (selected.status === "closed") {
       frozen = true;
       const stored = await listPayrollSettlements(selected.id);
       rows = stored.map(fromStored);
     } else {
-      const [days, legal] = await Promise.all([
+      const [days, legal, loaded] = await Promise.all([
         listWorkDays(company.id, selected.period_start, selected.period_end),
         listLegalContext(),
+        listPayrollAdjustments(selected.id),
       ]);
+      adjustments = loaded;
       rows = settleEmployees({
         periodStart: selected.period_start,
         periodEnd: selected.period_end,
-        employees: employees.map((employee) => ({
-          id: employee.id,
-          fullName: employee.full_name,
-          documentId: employee.document_id,
-          jobTitle: employee.job_title,
-          monthlySalary: employee.monthly_salary,
-          dailyHours: Number(employee.daily_hours),
-          contractType: employee.contract_type,
-          payPeriodType: employee.pay_period_type,
-          pendingVacationDays: Number(employee.pending_vacation_days),
-          active: employee.active,
-          hiredAt: employee.hired_at,
-        })),
+        employees: employees.map(toSettleEmployee),
         days: days.map((day) => ({
           employeeId: day.employee_id,
           date: day.work_date,
           start: day.start_time,
           end: day.end_time,
           dayType: day.day_type,
+        })),
+        adjustments: adjustments.map((item) => ({
+          id: item.id,
+          employeeId: item.employee_id,
+          kind: item.kind,
+          date: item.work_date,
+          start: item.start_time,
+          end: item.end_time,
+          label: item.label,
+          amount: item.amount == null ? null : Number(item.amount),
         })),
         snapshots: legal.snapshots,
         holidays: legal.holidays,
@@ -161,6 +167,14 @@ export default async function PayrollPage({
               </button>
             </form>
           ) : null}
+          {selected && selected.status === "closed" ? (
+            <form action={reopenPayrollPeriodAction}>
+              <input type="hidden" name="periodId" value={selected.id} />
+              <button type="submit" className="btn">
+                Reabrir período
+              </button>
+            </form>
+          ) : null}
         </div>
       </header>
 
@@ -196,16 +210,58 @@ export default async function PayrollPage({
                   {formError}
                 </p>
               ) : null}
-              {selected && !frozen && usesOrdinary ? (
+              {selected && !frozen ? (
                 <p className="callout">
-                  Sin marcaciones se liquida la jornada ordinaria del período. Esas cifras se
-                  guardan al cerrarlo.
+                  {usesOrdinary
+                    ? "Parte de la jornada ordinaria. En el detalle puedes marcar una ausencia, cambiar horas o agregar un bono. Al guardar, el desglose se vuelve a calcular."
+                    : "Los ajustes de este período ya entran en el desglose. Se conservan al cerrarlo."}
                 </p>
               ) : null}
               {frozen ? (
                 <p className="callout">
-                  Período cerrado. Los valores son los que quedaron guardados y no se recalculan.
+                  Período cerrado. Los valores quedaron guardados. Reabrirlo borra esa copia para
+                  poder corregirlo.
                 </p>
+              ) : null}
+
+              {selected && !frozen ? (
+                <section className="panel">
+                  <div className="label-caps" style={{ marginBottom: 12 }}>
+                    Este período
+                  </div>
+                  <form action={updatePayrollPeriodAction} className="stack">
+                    <input type="hidden" name="periodId" value={selected.id} />
+                    <div className="grid-3">
+                      <div className="field">
+                        <label htmlFor="edit_label">Etiqueta</label>
+                        <input id="edit_label" name="label" required defaultValue={selected.label} />
+                      </div>
+                      <div className="field">
+                        <label htmlFor="edit_period_start">Inicio</label>
+                        <input
+                          id="edit_period_start"
+                          name="period_start"
+                          type="date"
+                          required
+                          defaultValue={selected.period_start}
+                        />
+                      </div>
+                      <div className="field">
+                        <label htmlFor="edit_period_end">Fin</label>
+                        <input
+                          id="edit_period_end"
+                          name="period_end"
+                          type="date"
+                          required
+                          defaultValue={selected.period_end}
+                        />
+                      </div>
+                    </div>
+                    <button type="submit" className="btn" style={{ justifySelf: "start" }}>
+                      Guardar período
+                    </button>
+                  </form>
+                </section>
               ) : null}
 
               <section className="panel">
@@ -286,9 +342,11 @@ export default async function PayrollPage({
                             <span className={row.basis === "stored" ? "chip chip-ok" : "chip chip-warn"}>
                               {row.basis === "stored"
                                 ? "Guardada"
-                                : row.basis === "attendance"
-                                  ? "Marcaciones"
-                                  : "Ordinaria"}
+                                : row.basis === "adjusted"
+                                  ? "Ajustada"
+                                  : row.basis === "attendance"
+                                    ? "Marcaciones"
+                                    : "Ordinaria"}
                             </span>
                           </td>
                         </tr>
@@ -367,6 +425,15 @@ export default async function PayrollPage({
                     <b>Neto</b>
                     <span className="m">{formatCop(detail.net)}</span>
                   </div>
+                  {!frozen && selected ? (
+                    <AdjustmentEditor
+                      periodId={selected.id}
+                      employeeId={detail.key}
+                      periodStart={selected.period_start}
+                      periodEnd={selected.period_end}
+                      items={adjustments.filter((item) => item.employee_id === detail.key)}
+                    />
+                  ) : null}
                   <div className="detail-actions">
                     <Link href="/employees" className="btn">
                       Empleados
@@ -390,5 +457,115 @@ export default async function PayrollPage({
         </>
       )}
     </AppShell>
+  );
+}
+
+function adjustmentText(item: PayrollAdjustment): string {
+  const date = item.work_date?.slice(0, 10);
+  if (item.kind === "absence") return `Ausencia ${date}`;
+  if (item.kind === "hours") {
+    return `Horario ${date} ${item.start_time?.slice(0, 5)}–${item.end_time?.slice(0, 5)}`;
+  }
+  return `${item.label} ${formatCop(Number(item.amount ?? 0))}`;
+}
+
+function AdjustmentEditor({
+  periodId,
+  employeeId,
+  periodStart,
+  periodEnd,
+  items,
+}: {
+  periodId: string;
+  employeeId: string;
+  periodStart: string;
+  periodEnd: string;
+  items: PayrollAdjustment[];
+}) {
+  return (
+    <div className="stack" style={{ marginTop: 18 }}>
+      <div className="group-title">Ajustes de este empleado</div>
+      {items.length === 0 ? (
+        <p className="muted" style={{ margin: 0 }}>
+          Todavía no hay ausencias, horas ni bonos.
+        </p>
+      ) : (
+        items.map((item) => (
+          <form key={item.id} action={deletePayrollAdjustmentAction} className="line">
+            <input type="hidden" name="periodId" value={periodId} />
+            <input type="hidden" name="employeeId" value={employeeId} />
+            <input type="hidden" name="adjustmentId" value={item.id} />
+            <span>{adjustmentText(item)}</span>
+            <button type="submit" className="btn">
+              Quitar
+            </button>
+          </form>
+        ))
+      )}
+      <form action={addPayrollAdjustmentAction} className="stack">
+        <input type="hidden" name="periodId" value={periodId} />
+        <input type="hidden" name="employeeId" value={employeeId} />
+        <input type="hidden" name="kind" value="absence" />
+        <div className="field">
+          <label htmlFor={`absence-${employeeId}`}>Ausencia</label>
+          <input
+            id={`absence-${employeeId}`}
+            name="work_date"
+            type="date"
+            required
+            min={periodStart}
+            max={periodEnd}
+          />
+        </div>
+        <button type="submit" className="btn" style={{ justifySelf: "start" }}>
+          Marcar ausencia
+        </button>
+      </form>
+      <form action={addPayrollAdjustmentAction} className="stack">
+        <input type="hidden" name="periodId" value={periodId} />
+        <input type="hidden" name="employeeId" value={employeeId} />
+        <input type="hidden" name="kind" value="hours" />
+        <div className="field">
+          <label htmlFor={`hours-date-${employeeId}`}>Día con otro horario</label>
+          <input
+            id={`hours-date-${employeeId}`}
+            name="work_date"
+            type="date"
+            required
+            min={periodStart}
+            max={periodEnd}
+          />
+        </div>
+        <div className="grid-2">
+          <div className="field">
+            <label htmlFor={`hours-start-${employeeId}`}>Desde</label>
+            <input id={`hours-start-${employeeId}`} name="start_time" type="time" required defaultValue="08:00" />
+          </div>
+          <div className="field">
+            <label htmlFor={`hours-end-${employeeId}`}>Hasta</label>
+            <input id={`hours-end-${employeeId}`} name="end_time" type="time" required defaultValue="18:00" />
+          </div>
+        </div>
+        <button type="submit" className="btn" style={{ justifySelf: "start" }}>
+          Guardar horario
+        </button>
+      </form>
+      <form action={addPayrollAdjustmentAction} className="stack">
+        <input type="hidden" name="periodId" value={periodId} />
+        <input type="hidden" name="employeeId" value={employeeId} />
+        <input type="hidden" name="kind" value="bonus" />
+        <div className="field">
+          <label htmlFor={`bonus-label-${employeeId}`}>Bono</label>
+          <input id={`bonus-label-${employeeId}`} name="label" required placeholder="Bono de productividad" />
+        </div>
+        <div className="field">
+          <label htmlFor={`bonus-amount-${employeeId}`}>Valor</label>
+          <input id={`bonus-amount-${employeeId}`} name="amount" type="number" min={1} required />
+        </div>
+        <button type="submit" className="btn" style={{ justifySelf: "start" }}>
+          Agregar bono
+        </button>
+      </form>
+    </div>
   );
 }

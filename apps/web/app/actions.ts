@@ -3,15 +3,36 @@
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { settleEmployees } from "@/lib/payroll/settle";
+import { settleEmployees, toSettleEmployee, type PeriodAdjustment } from "@/lib/payroll/settle";
 import {
   ACTIVE_COMPANY_COOKIE,
   listEmployees,
   listLegalContext,
+  listPayrollAdjustments,
   listWorkDays,
   requireUser,
 } from "@/lib/supabase/data";
-import type { ContractType, PayPeriodType } from "@/lib/types";
+import type { ContractType, PayPeriodType, PayrollAdjustment } from "@/lib/types";
+
+function toAdjustment(row: PayrollAdjustment): PeriodAdjustment {
+  return {
+    id: row.id,
+    employeeId: row.employee_id,
+    kind: row.kind,
+    date: row.work_date,
+    start: row.start_time,
+    end: row.end_time,
+    label: row.label,
+    amount: row.amount == null ? null : Number(row.amount),
+  };
+}
+
+function backToPeriod(periodId: string, employeeId?: string, error?: string): never {
+  const params = new URLSearchParams({ period: periodId });
+  if (employeeId) params.set("employee", employeeId);
+  if (error) params.set("error", error);
+  redirect(`/payroll?${params.toString()}`);
+}
 
 export async function signOutAction() {
   const { supabase } = await requireUser();
@@ -71,27 +92,38 @@ export async function createEmployeeAction(formData: FormData) {
   const companyId = String(formData.get("companyId") ?? "");
   const full_name = String(formData.get("full_name") ?? "").trim();
   const document_id = String(formData.get("document_id") ?? "").trim();
+  const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const job_title = String(formData.get("job_title") ?? "").trim();
   const monthly_salary = Number(formData.get("monthly_salary") ?? 0);
   const daily_hours = Number(formData.get("daily_hours") ?? 8);
   const contract_type = String(formData.get("contract_type") ?? "INDEFINIDO") as ContractType;
   const pay_period_type = String(formData.get("pay_period_type") ?? "MONTHLY") as PayPeriodType;
 
-  if (!companyId || !full_name || !document_id || monthly_salary <= 0) {
-    throw new Error("Datos de empleado incompletos");
+  if (!companyId || !full_name || !document_id || monthly_salary <= 0 || !email.includes("@")) {
+    redirect("/employees?error=" + encodeURIComponent("Completa nombre, documento, correo y salario."));
   }
 
   const { error } = await supabase.from("employees").insert({
     company_id: companyId,
     full_name,
     document_id,
+    email,
     job_title,
     monthly_salary,
     daily_hours,
     contract_type,
     pay_period_type,
   });
-  if (error) throw error;
+  if (error) {
+    console.error(error);
+    const duplicate = error.code === "23505";
+    const message = duplicate
+      ? error.message.toLowerCase().includes("email") || error.details?.toLowerCase().includes("email")
+        ? "Ese correo ya está en esta empresa."
+        : "Ese documento ya está en esta empresa."
+      : "No se pudo guardar el empleado.";
+    redirect("/employees?error=" + encodeURIComponent(message));
+  }
   revalidatePath("/employees");
   revalidatePath("/dashboard");
   redirect("/employees");
@@ -136,27 +168,16 @@ export async function closePayrollPeriodAction(formData: FormData) {
     redirect(`/payroll?period=${period.id}`);
   }
 
-  const [employees, days, legal] = await Promise.all([
+  const [employees, days, legal, adjustments] = await Promise.all([
     listEmployees(period.company_id),
     listWorkDays(period.company_id, period.period_start, period.period_end),
     listLegalContext(),
+    listPayrollAdjustments(period.id),
   ]);
   const settlements = settleEmployees({
     periodStart: period.period_start,
     periodEnd: period.period_end,
-    employees: employees.map((employee) => ({
-      id: employee.id,
-      fullName: employee.full_name,
-      documentId: employee.document_id,
-      jobTitle: employee.job_title,
-      monthlySalary: employee.monthly_salary,
-      dailyHours: Number(employee.daily_hours),
-      contractType: employee.contract_type,
-      payPeriodType: employee.pay_period_type,
-      pendingVacationDays: Number(employee.pending_vacation_days),
-      active: employee.active,
-      hiredAt: employee.hired_at,
-    })),
+    employees: employees.map(toSettleEmployee),
     days: days.map((day) => ({
       employeeId: day.employee_id,
       date: day.work_date,
@@ -164,6 +185,7 @@ export async function closePayrollPeriodAction(formData: FormData) {
       end: day.end_time,
       dayType: day.day_type,
     })),
+    adjustments: adjustments.map(toAdjustment),
     snapshots: legal.snapshots,
     holidays: legal.holidays,
   });
@@ -225,4 +247,153 @@ export async function closePayrollPeriodAction(formData: FormData) {
   revalidatePath("/payroll");
   revalidatePath("/dashboard");
   redirect(`/payroll?period=${period.id}`);
+}
+
+async function openPeriodOrRedirect(periodId: string) {
+  const { supabase } = await requireUser();
+  const { data: period, error } = await supabase
+    .from("payroll_periods")
+    .select("id,company_id,period_start,period_end,status")
+    .eq("id", periodId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!period) backToPeriod("", undefined, "No encontramos ese período.");
+  if (period.status === "closed") backToPeriod(period.id, undefined, "El período está cerrado.");
+  return { supabase, period };
+}
+
+export async function updatePayrollPeriodAction(formData: FormData) {
+  const periodId = String(formData.get("periodId") ?? "");
+  const label = String(formData.get("label") ?? "").trim();
+  const periodStart = String(formData.get("period_start") ?? "");
+  const periodEnd = String(formData.get("period_end") ?? "");
+  const { supabase, period } = await openPeriodOrRedirect(periodId);
+  if (!label || !periodStart || !periodEnd || periodEnd < periodStart) {
+    backToPeriod(period.id, undefined, "Revisa la etiqueta y las fechas.");
+  }
+  const { error } = await supabase
+    .from("payroll_periods")
+    .update({ label, period_start: periodStart, period_end: periodEnd })
+    .eq("id", period.id);
+  if (error) {
+    console.error(error);
+    backToPeriod(period.id, undefined, "No se pudo guardar el período.");
+  }
+  revalidatePath("/payroll");
+  backToPeriod(period.id);
+}
+
+export async function reopenPayrollPeriodAction(formData: FormData) {
+  const { supabase } = await requireUser();
+  const periodId = String(formData.get("periodId") ?? "");
+  const { data: period, error } = await supabase
+    .from("payroll_periods")
+    .select("id,status")
+    .eq("id", periodId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!period) backToPeriod("", undefined, "No encontramos ese período.");
+  if (period.status !== "closed") backToPeriod(period.id);
+  const { error: deleteError } = await supabase
+    .from("payroll_settlements")
+    .delete()
+    .eq("period_id", period.id);
+  if (deleteError) {
+    console.error(deleteError);
+    backToPeriod(period.id, undefined, "No se pudo reabrir el período.");
+  }
+  const { error: updateError } = await supabase
+    .from("payroll_periods")
+    .update({ status: "draft", closed_at: null })
+    .eq("id", period.id);
+  if (updateError) {
+    console.error(updateError);
+    backToPeriod(period.id, undefined, "No se pudo reabrir el período.");
+  }
+  revalidatePath("/payroll");
+  revalidatePath("/dashboard");
+  backToPeriod(period.id);
+}
+
+export async function addPayrollAdjustmentAction(formData: FormData) {
+  const periodId = String(formData.get("periodId") ?? "");
+  const employeeId = String(formData.get("employeeId") ?? "");
+  const kind = String(formData.get("kind") ?? "");
+  const { supabase, period } = await openPeriodOrRedirect(periodId);
+  if (!employeeId) backToPeriod(period.id, undefined, "Elige un empleado.");
+
+  const row: {
+    company_id: string;
+    period_id: string;
+    employee_id: string;
+    kind: "absence" | "hours" | "bonus";
+    work_date?: string;
+    start_time?: string;
+    end_time?: string;
+    label?: string;
+    amount?: number;
+  } = {
+    company_id: period.company_id,
+    period_id: period.id,
+    employee_id: employeeId,
+    kind: "absence",
+  };
+
+  if (kind === "absence") {
+    const workDate = String(formData.get("work_date") ?? "");
+    if (workDate < period.period_start || workDate > period.period_end) {
+      backToPeriod(period.id, employeeId, "La ausencia tiene que caer dentro del período.");
+    }
+    row.kind = "absence";
+    row.work_date = workDate;
+  } else if (kind === "hours") {
+    const workDate = String(formData.get("work_date") ?? "");
+    const start = String(formData.get("start_time") ?? "");
+    const end = String(formData.get("end_time") ?? "");
+    if (workDate < period.period_start || workDate > period.period_end || !start || !end || end <= start) {
+      backToPeriod(period.id, employeeId, "Revisa el día y el horario.");
+    }
+    row.kind = "hours";
+    row.work_date = workDate;
+    row.start_time = start;
+    row.end_time = end;
+  } else if (kind === "bonus") {
+    const label = String(formData.get("label") ?? "").trim();
+    const amount = Number(formData.get("amount") ?? 0);
+    if (!label || amount <= 0) {
+      backToPeriod(period.id, employeeId, "El bono necesita un nombre y un valor.");
+    }
+    row.kind = "bonus";
+    row.label = label;
+    row.amount = Math.round(amount);
+    row.work_date = period.period_end;
+  } else {
+    backToPeriod(period.id, employeeId, "Ese ajuste no es válido.");
+  }
+
+  const { error } = await supabase.from("payroll_adjustments").insert(row);
+  if (error) {
+    console.error(error);
+    backToPeriod(period.id, employeeId, "No se pudo guardar el ajuste.");
+  }
+  revalidatePath("/payroll");
+  backToPeriod(period.id, employeeId);
+}
+
+export async function deletePayrollAdjustmentAction(formData: FormData) {
+  const periodId = String(formData.get("periodId") ?? "");
+  const employeeId = String(formData.get("employeeId") ?? "");
+  const adjustmentId = String(formData.get("adjustmentId") ?? "");
+  const { supabase, period } = await openPeriodOrRedirect(periodId);
+  const { error } = await supabase
+    .from("payroll_adjustments")
+    .delete()
+    .eq("id", adjustmentId)
+    .eq("period_id", period.id);
+  if (error) {
+    console.error(error);
+    backToPeriod(period.id, employeeId, "No se pudo quitar el ajuste.");
+  }
+  revalidatePath("/payroll");
+  backToPeriod(period.id, employeeId);
 }

@@ -11,7 +11,12 @@ import {
 export const metadata = { title: "Empleados" };
 export const dynamic = "force-dynamic";
 
-export default async function EmployeesPage() {
+export default async function EmployeesPage({
+  searchParams,
+}: {
+  searchParams?: { error?: string };
+}) {
+  const formError = searchParams?.error?.slice(0, 200);
   const companies = await listCompanies();
   const company = await getActiveCompany();
   const employees = company ? await listEmployees(company.id) : [];
@@ -43,6 +48,11 @@ export default async function EmployeesPage() {
               <div className="label-caps" style={{ marginBottom: 12 }}>
                 Agregar empleado
               </div>
+              {formError ? (
+                <p role="alert" className="callout">
+                  {formError}
+                </p>
+              ) : null}
               <form action={createEmployeeAction} className="stack">
                 <input type="hidden" name="companyId" value={company.id} />
                 <div className="grid-2">
@@ -54,6 +64,13 @@ export default async function EmployeesPage() {
                     <label htmlFor="document_id">Documento</label>
                     <input id="document_id" name="document_id" required />
                   </div>
+                </div>
+                <div className="field">
+                  <label htmlFor="email">Correo</label>
+                  <input id="email" name="email" type="email" required placeholder="persona@empresa.com" />
+                  <span className="muted" style={{ fontSize: 13 }}>
+                    Con este correo lo vincularemos a la app del empleado. La invitación se envía cuando esa app exista.
+                  </span>
                 </div>
                 <div className="grid-2">
                   <div className="field">
@@ -111,6 +128,7 @@ export default async function EmployeesPage() {
                   <thead>
                     <tr>
                       <th>Empleado</th>
+                      <th>Correo</th>
                       <th>Documento</th>
                       <th>Cargo</th>
                       <th>Contrato</th>
@@ -124,6 +142,7 @@ export default async function EmployeesPage() {
                         <td>
                           <b>{e.full_name}</b>
                         </td>
+                        <td>{e.email ?? "—"}</td>
                         <td className="m">{e.document_id}</td>
                         <td>{e.job_title || "—"}</td>
                         <td>{e.contract_type.replaceAll("_", " ")}</td>
