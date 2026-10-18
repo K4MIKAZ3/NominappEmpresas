@@ -300,9 +300,7 @@ security definer
 set search_path = public
 as $$
 begin
-  if new.created_by is null then
-    new.created_by := auth.uid();
-  end if;
+  new.created_by := auth.uid();
   return new;
 end;
 $$;
@@ -357,7 +355,10 @@ drop policy if exists manual_entries_select on public.manual_payroll_entries;
 drop policy if exists manual_entries_write on public.manual_payroll_entries;
 
 create policy companies_select on public.companies
-  for select to authenticated using (public.is_company_member(id));
+  for select to authenticated using (
+    public.is_company_member(id)
+    or created_by = auth.uid()
+  );
 create policy companies_insert on public.companies
   for insert to authenticated with check (auth.uid() is not null);
 create policy companies_update on public.companies

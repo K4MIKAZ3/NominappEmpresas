@@ -10,7 +10,12 @@ import {
 export const metadata = { title: "Empresas" };
 export const dynamic = "force-dynamic";
 
-export default async function CompaniesPage() {
+export default async function CompaniesPage({
+  searchParams,
+}: {
+  searchParams?: { error?: string };
+}) {
+  const formError = searchParams?.error?.slice(0, 200);
   const companies = await listCompanies();
   const company = await getActiveCompany();
   const [employeeCount, periods] = company
@@ -42,6 +47,11 @@ export default async function CompaniesPage() {
           <div className="label-caps" style={{ marginBottom: 12 }}>
             Nueva empresa
           </div>
+          {formError ? (
+            <p role="alert" style={{ color: "#8b1e1e", margin: "0 0 12px" }}>
+              {formError}
+            </p>
+          ) : null}
           <form action={createCompanyAction} className="stack">
             <div className="grid-2">
               <div className="field">

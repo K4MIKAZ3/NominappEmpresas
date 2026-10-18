@@ -39,7 +39,14 @@ export async function createCompanyAction(formData: FormData) {
     .insert({ name, nit, city })
     .select("id")
     .single();
-  if (error) throw error;
+  if (error) {
+    console.error(error);
+    const message =
+      error.code === "23505"
+        ? "Ya existe una empresa con ese NIT."
+        : "No se pudo crear la empresa. Intenta de nuevo.";
+    redirect(`/companies?error=${encodeURIComponent(message)}`);
+  }
 
   cookies().set(ACTIVE_COMPANY_COOKIE, data.id, {
     path: "/",
