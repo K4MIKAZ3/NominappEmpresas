@@ -271,9 +271,6 @@ export default async function PayrollPage() {
                     <span className="m">{formatCop(sample.netTotal)}</span>
                   </div>
                   <div className="detail-actions">
-                    <Link href="/colilla" className="btn btn-accent">
-                      Ver colilla
-                    </Link>
                     <Link href="/employees" className="btn">
                       Empleados
                     </Link>
