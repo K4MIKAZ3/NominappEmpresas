@@ -423,6 +423,10 @@ textarea {
   font-weight: 600;
 }
 
+.table-html tr.is-selected td {
+  background: #fff8ea;
+}
+
 .callout {
   margin: 16px 0;
   padding: 12px;

@@ -87,6 +87,8 @@ export {
   transportSubsidyForDays,
 } from "./rates.js";
 
+export { ordinaryShiftEnd, ordinaryWorkEntries } from "./ordinarySchedule.js";
+
 export {
   applyManualEntries,
   buildPeriodSummary,
